@@ -1,0 +1,15 @@
+{
+    "created": "2026-08-29T11:51:39.859536",
+    "description": "The boundary every layer in this dataset is extracted from, widened beyond the source geometry. This is the outline drawn on the map preview.",
+    "format": "GeoJSON",
+    "download_url": "https://production-raw-data-api.s3.amazonaws.com/ISO3/NPL/combined/hot_flood_npl_aoi.geojson",
+    "id": "0511c76e-e7c1-4689-a57e-0e2ba5f0e11e",
+    "last_modified": "2026-09-11T10:04:56.238333",
+    "metadata_modified": "2026-09-11T10:07:02.637268",
+    "microdata": false,
+    "dataset_id": "bdf5a5c1-d0c1-4a52-8e3e-80ea718791c3",
+    "resource_type": "api",
+    "name": "Area of Interest, GeoJSON",
+    "mimetype": null,
+    "size": "223.2K"
+}
