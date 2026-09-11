@@ -6,4 +6,3 @@ streamlit-folium
 openpyxl
 shapely
 pyogrio
-fiona
