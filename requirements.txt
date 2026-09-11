@@ -1,7 +1,9 @@
 streamlit
 pandas
 geopandas
-pydeck
+folium
+streamlit-folium
 openpyxl
 shapely
 pyogrio
+fiona
