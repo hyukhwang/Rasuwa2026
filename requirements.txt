@@ -1,0 +1,8 @@
+streamlit
+pandas
+geopandas
+pydeck
+openpyxl
+shapely
+pyogrio
+fiona
