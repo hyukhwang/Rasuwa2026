@@ -1,8 +1,9 @@
-streamlit
-pandas
-geopandas
-folium
-streamlit-folium
-openpyxl
-shapely
-pyogrio
+streamlit>=1.32
+pandas>=2.0
+geopandas>=0.14
+shapely>=2.0
+pyogrio>=0.7
+folium>=0.15
+branca>=0.7
+streamlit-folium>=0.19
+openpyxl>=3.1
