@@ -25,6 +25,7 @@ from pathlib import Path
 import pandas as pd
 import geopandas as gpd
 import folium
+import branca.colormap as bcm
 import streamlit as st
 from streamlit_folium import st_folium
 
@@ -113,6 +114,42 @@ SEVERITY_HEX = dict(SEVERITY_LEGEND)
 DEFAULT_SEVERITY_HEX = (
     SEVERITY_HEX["No Data"]
 )
+
+
+# ============================================================
+# 4-1. Selectable indicators for the map / table
+# ============================================================
+
+# Each entry: (label shown to the user, column name, kind)
+# kind is "categorical" (uses the Severity-style legend) or
+# "numeric" (uses a continuous color ramp).
+INDICATOR_OPTIONS = [
+    ("심각도 (Severity)", "Severity", "categorical"),
+    (
+        "영향 인구수 (Affected population)",
+        "Affected_population",
+        "numeric",
+    ),
+    (
+        "식수 접근 인구수 (Water access population)",
+        "Water_access_population",
+        "numeric",
+    ),
+    ("사상자 수 (Casualties)", "Casualties", "numeric"),
+    (
+        "예상 소요 자금 (Estimated funding, USD)",
+        "Estimated_funding_USD",
+        "numeric",
+    ),
+]
+
+NUMERIC_COLOR_RAMP = [
+    "#FFF3B0",  # low
+    "#FFDD57",
+    "#F4912D",
+    "#D62728",
+    "#7A0F0F",  # high
+]
 
 
 # ============================================================
@@ -1254,6 +1291,108 @@ def filter_municipality_rows(
 
 
 # ============================================================
+# 19-1. Indicator display layer (choropleth coloring)
+# ============================================================
+
+def compute_display_layer(
+    gdf,
+    column,
+    kind,
+):
+    """
+    Given the merged district GeoDataFrame, compute a
+    'display_hex' column used to color the map according to
+    the indicator currently selected by the user, plus legend
+    information to render under the map.
+
+    Returns (gdf_with_display_hex, legend_info) where
+    legend_info is one of:
+        {"kind": "categorical", "items": [(label, color), ...]}
+        {"kind": "numeric", "vmin": ..., "vmax": ...,
+         "colors": [...], "no_data_color": ...}
+        {"kind": "empty"}   # no usable data at all
+    """
+
+    gdf = gdf.copy()
+
+    if (
+        gdf is None
+        or gdf.empty
+        or column not in gdf.columns
+    ):
+
+        gdf["display_hex"] = DEFAULT_SEVERITY_HEX
+
+        return gdf, {"kind": "empty"}
+
+    if kind == "categorical":
+
+        gdf["display_hex"] = (
+            gdf[column]
+            .map(SEVERITY_HEX)
+            .fillna(DEFAULT_SEVERITY_HEX)
+        )
+
+        legend_info = {
+            "kind": "categorical",
+            "items": SEVERITY_LEGEND,
+        }
+
+        return gdf, legend_info
+
+    # --------------------------------------------------------
+    # Numeric indicator
+    # --------------------------------------------------------
+
+    values = pd.to_numeric(
+        gdf[column],
+        errors="coerce",
+    )
+
+    valid = values.dropna()
+
+    if valid.empty:
+
+        gdf["display_hex"] = DEFAULT_SEVERITY_HEX
+
+        return gdf, {"kind": "empty"}
+
+    vmin = float(valid.min())
+    vmax = float(valid.max())
+
+    if vmin == vmax:
+        vmax = vmin + 1.0
+
+    colormap = bcm.LinearColormap(
+        colors=NUMERIC_COLOR_RAMP,
+        vmin=vmin,
+        vmax=vmax,
+    )
+
+    def _to_hex(v):
+
+        if pd.isna(v):
+            return DEFAULT_SEVERITY_HEX
+
+        try:
+            return colormap(float(v))
+        except Exception:
+            return DEFAULT_SEVERITY_HEX
+
+    gdf["display_hex"] = values.map(_to_hex)
+
+    legend_info = {
+        "kind": "numeric",
+        "vmin": vmin,
+        "vmax": vmax,
+        "colors": NUMERIC_COLOR_RAMP,
+        "no_data_color": DEFAULT_SEVERITY_HEX,
+    }
+
+    return gdf, legend_info
+
+
+# ============================================================
 # 20. Folium styles
 # ============================================================
 
@@ -1268,9 +1407,8 @@ def district_style_function(feature):
     )
 
     color = (
-        props.get(
-            "severity_hex"
-        )
+        props.get("display_hex")
+        or props.get("severity_hex")
         or DEFAULT_SEVERITY_HEX
     )
 
@@ -1495,6 +1633,7 @@ def build_folium_map(
     municipality_gdf=None,
     corridor_df=None,
     markers_df=None,
+    extra_tooltip=None,
 ):
 
     m = folium.Map(
@@ -1551,6 +1690,20 @@ def build_folium_map(
 
             tooltip_aliases.append(
                 "Severity:"
+            )
+
+        if (
+            extra_tooltip
+            and extra_tooltip[0] in district_gdf.columns
+            and extra_tooltip[0] not in tooltip_fields
+        ):
+
+            tooltip_fields.append(
+                extra_tooltip[0]
+            )
+
+            tooltip_aliases.append(
+                f"{extra_tooltip[1]}:"
             )
 
         if tooltip_fields:
@@ -2099,61 +2252,12 @@ def main():
         st.stop()
 
     # --------------------------------------------------------
-    # Validate District field
-    # --------------------------------------------------------
-
-    if (
-        DISTRICT_NAME_FIELD
-        not in flood_gdf.columns
-    ):
-
-        st.error(
-            "flood.geojson에 "
-            "`District` 컬럼이 없습니다."
-        )
-
-        st.write(
-            "현재 flood.geojson 컬럼:"
-        )
-
-        st.code(
-            "\n".join(
-                str(c)
-                for c in flood_gdf.columns
-            )
-        )
-
-        st.info(
-            "flood.geojson에는 최소한 "
-            "`District` 컬럼이 필요합니다."
-        )
-
-        st.stop()
-
-    flood_gdf = prepare_flood_gdf(
-        flood_gdf
-    )
-
-    if flood_notes:
-
-        with st.sidebar.expander(
-            "ℹ️ flood.geojson processing log",
-            expanded=False,
-        ):
-
-            for note in flood_notes:
-                st.caption(note)
-
-    st.sidebar.caption(
-        f"District features: "
-        f"{len(flood_gdf):,}"
-    )
-
-    # --------------------------------------------------------
-    # Municipality
+    # Municipality (loaded before District validation so that
+    # it can be used as a fallback source for District info)
     # --------------------------------------------------------
 
     municipality_gdf = None
+    muni_notes = []
 
     if (
         municipality_path
@@ -2223,6 +2327,202 @@ def main():
         )
 
     # --------------------------------------------------------
+    # Ensure District field exists in flood_gdf
+    #
+    # flood.geojson에 District 컬럼이 아예 없어도 앱이 멈추지
+    # 않도록, 다음 순서로 District 정보를 자동 생성합니다.
+    #
+    #   1) municipality.geojson에 District 정보가 있으면
+    #      공간 조인(spatial join)으로 District를 추정합니다.
+    #   2) 그것도 불가능하면 "Zone 1", "Zone 2" ... 형태의
+    #      임시 District 이름을 자동 생성합니다.
+    #      (이 경우 District_Situation.csv/xlsx 등과는
+    #      자동으로 연결되지 않으니, 실제 행정구역 데이터로
+    #      교체하는 것을 권장한다는 안내를 표시합니다.)
+    # --------------------------------------------------------
+
+    district_field_source = None
+
+    if DISTRICT_NAME_FIELD not in flood_gdf.columns:
+
+        # ------------------------------------------------
+        # 1) Try spatial join with municipality boundaries
+        # ------------------------------------------------
+
+        joined_from_municipality = False
+
+        if (
+            municipality_gdf is not None
+            and not municipality_gdf.empty
+            and DISTRICT_NAME_FIELD in municipality_gdf.columns
+        ):
+
+            try:
+
+                flood_gdf = flood_gdf.reset_index(drop=True)
+                flood_gdf["_flood_row_id"] = flood_gdf.index
+
+                # Use representative point so that the join
+                # also works for polygons that only partially
+                # overlap a municipality boundary.
+                points = flood_gdf.copy()
+                points["geometry"] = (
+                    points.geometry.representative_point()
+                )
+
+                muni_cols = [
+                    c
+                    for c in [
+                        DISTRICT_NAME_FIELD,
+                        DISTRICT_ID_FIELD,
+                    ]
+                    if c in municipality_gdf.columns
+                ]
+
+                joined = gpd.sjoin(
+                    points[["_flood_row_id", "geometry"]],
+                    municipality_gdf[muni_cols + ["geometry"]],
+                    how="left",
+                    predicate="intersects",
+                )
+
+                joined = joined.drop_duplicates(
+                    subset=["_flood_row_id"],
+                    keep="first",
+                )
+
+                district_lookup = joined.set_index(
+                    "_flood_row_id"
+                )[muni_cols]
+
+                flood_gdf = flood_gdf.merge(
+                    district_lookup,
+                    left_on="_flood_row_id",
+                    right_index=True,
+                    how="left",
+                )
+
+                flood_gdf = flood_gdf.drop(
+                    columns=["_flood_row_id"]
+                )
+
+                matched = (
+                    flood_gdf[DISTRICT_NAME_FIELD]
+                    .notna()
+                    .sum()
+                )
+
+                if matched > 0:
+
+                    joined_from_municipality = True
+                    district_field_source = "municipality_spatial_join"
+
+                    st.sidebar.info(
+                        "flood.geojson에 `District` 컬럼이 없어 "
+                        f"municipality.geojson과의 공간 조인으로 "
+                        f"{matched}/{len(flood_gdf)}개 구역의 "
+                        "District를 추정했습니다."
+                    )
+
+                    unmatched = (
+                        len(flood_gdf) - matched
+                    )
+
+                    if unmatched > 0:
+
+                        flood_gdf[DISTRICT_NAME_FIELD] = (
+                            flood_gdf[DISTRICT_NAME_FIELD]
+                            .fillna("Unknown")
+                        )
+
+                        st.sidebar.caption(
+                            f"District를 찾지 못한 "
+                            f"{unmatched}개 구역은 "
+                            "'Unknown'으로 표시됩니다."
+                        )
+
+            except Exception as e:
+
+                st.sidebar.warning(
+                    "municipality.geojson과의 공간 조인 중 "
+                    f"오류가 발생했습니다: {e}"
+                )
+
+        # ------------------------------------------------
+        # 2) Fallback: auto-generate temporary District names
+        # ------------------------------------------------
+
+        if not joined_from_municipality:
+
+            flood_gdf = flood_gdf.reset_index(drop=True)
+
+            flood_gdf[DISTRICT_NAME_FIELD] = [
+                f"Zone {i + 1}"
+                for i in range(len(flood_gdf))
+            ]
+
+            district_field_source = "auto_generated"
+
+            st.sidebar.warning(
+                "flood.geojson에 `District` 컬럼이 없어 "
+                "'Zone 1', 'Zone 2' ... 형태의 임시 District 이름을 "
+                "자동으로 생성했습니다. District_Situation 데이터, "
+                "Water Access, Funding 등 다른 표와는 자동으로 "
+                "연결되지 않으므로, 가능하면 flood.geojson에 실제 "
+                "행정구역명을 담은 `District` 컬럼을 추가하는 것을 "
+                "권장합니다."
+            )
+
+    # --------------------------------------------------------
+    # Validate District field (should now always exist)
+    # --------------------------------------------------------
+
+    if (
+        DISTRICT_NAME_FIELD
+        not in flood_gdf.columns
+    ):
+
+        # This should not normally happen anymore, but kept as
+        # a final safety net in case of unexpected data issues.
+
+        st.error(
+            "flood.geojson에 "
+            "`District` 컬럼을 생성하지 못했습니다."
+        )
+
+        st.write(
+            "현재 flood.geojson 컬럼:"
+        )
+
+        st.code(
+            "\n".join(
+                str(c)
+                for c in flood_gdf.columns
+            )
+        )
+
+        st.stop()
+
+    flood_gdf = prepare_flood_gdf(
+        flood_gdf
+    )
+
+    if flood_notes:
+
+        with st.sidebar.expander(
+            "ℹ️ flood.geojson processing log",
+            expanded=False,
+        ):
+
+            for note in flood_notes:
+                st.caption(note)
+
+    st.sidebar.caption(
+        f"District features: "
+        f"{len(flood_gdf):,}"
+    )
+
+    # --------------------------------------------------------
     # Event information
     # --------------------------------------------------------
 
@@ -2284,6 +2584,15 @@ def main():
         "지도에서 District 또는 Municipality를 "
         "클릭하면 상세 정보를 확인할 수 있습니다."
     )
+
+    if district_field_source == "auto_generated":
+
+        st.warning(
+            "⚠️ 현재 District 경계는 flood.geojson에 실제 행정구역 "
+            "정보가 없어 임시로 생성된 것입니다 (Zone 1, Zone 2 ...). "
+            "District_Situation 등 다른 데이터와 연결하려면 "
+            "flood.geojson에 실제 District 이름을 추가해 주세요."
+        )
 
     # --------------------------------------------------------
     # District situation
@@ -2474,41 +2783,119 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Map legend
+    # Indicator selector
+    #
+    # 이 지표 선택에 따라 지도의 District 색상과, 지도 아래
+    # 전체 수치표가 함께 바뀝니다.
+    # --------------------------------------------------------
+
+    st.markdown(
+        "#### 🗂️ 지도에 표시할 지표 선택"
+    )
+
+    indicator_labels = [
+        label
+        for label, _, _ in INDICATOR_OPTIONS
+    ]
+
+    selected_label = st.selectbox(
+        "지표를 선택하면 지도 색상과 아래 표가 함께 바뀝니다.",
+        indicator_labels,
+        index=0,
+        key="selected_indicator",
+    )
+
+    selected_column, selected_kind = next(
+        (col, kind)
+        for label, col, kind in INDICATOR_OPTIONS
+        if label == selected_label
+    )
+
+    merged, legend_info = compute_display_layer(
+        merged,
+        selected_column,
+        selected_kind,
+    )
+
+    # --------------------------------------------------------
+    # Map legend (dynamic, based on the selected indicator)
     # --------------------------------------------------------
 
     with st.expander(
-        "ℹ️ Map information and Impact Level",
+        "ℹ️ Map information and legend",
         expanded=True,
     ):
 
-        legend_columns = st.columns(
-            len(SEVERITY_LEGEND)
-        )
+        if legend_info.get("kind") == "categorical":
 
-        for column, (
-            label,
-            hex_color,
-        ) in zip(
-            legend_columns,
-            SEVERITY_LEGEND,
-        ):
+            legend_columns = st.columns(
+                len(legend_info["items"])
+            )
 
-            column.markdown(
+            for column, (
+                label,
+                hex_color,
+            ) in zip(
+                legend_columns,
+                legend_info["items"],
+            ):
+
+                column.markdown(
+                    f"""
+                    <div>
+                        <span style="
+                            display:inline-block;
+                            width:14px;
+                            height:14px;
+                            background:{hex_color};
+                            border-radius:3px;
+                            margin-right:6px;
+                        "></span>
+                        {label}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        elif legend_info.get("kind") == "numeric":
+
+            gradient = ", ".join(
+                legend_info["colors"]
+            )
+
+            st.markdown(
                 f"""
-                <div>
-                    <span style="
-                        display:inline-block;
-                        width:14px;
-                        height:14px;
-                        background:{hex_color};
-                        border-radius:3px;
-                        margin-right:6px;
-                    "></span>
-                    {label}
+                <div style="
+                    background: linear-gradient(
+                        to right, {gradient}
+                    );
+                    height: 14px;
+                    border-radius: 3px;
+                "></div>
+                <div style="
+                    display:flex;
+                    justify-content:space-between;
+                    font-size: 0.85rem;
+                    margin-top: 2px;
+                ">
+                    <span>{format_number(legend_info['vmin'])}</span>
+                    <span>{format_number(legend_info['vmax'])}</span>
                 </div>
                 """,
                 unsafe_allow_html=True,
+            )
+
+            st.caption(
+                "색이 진한 빨강일수록 수치가 높은 District입니다. "
+                "회색 = 아직 데이터가 입력되지 않은 District."
+            )
+
+        else:
+
+            st.info(
+                "선택한 지표에 대한 데이터가 아직 없습니다. "
+                "Excel(District_Situation 등)에 값을 채우면 "
+                "지도와 표에 자동으로 반영됩니다."
             )
 
         st.caption(
@@ -2539,6 +2926,10 @@ def main():
                 municipality_gdf,
                 corridor_df,
                 markers_df,
+                extra_tooltip=(
+                    selected_column,
+                    selected_label,
+                ),
             )
 
         except Exception as e:
@@ -3206,6 +3597,115 @@ def main():
                 "Municipality를 클릭하면 "
                 "상세 정보가 표시됩니다."
             )
+
+    # --------------------------------------------------------
+    # Full indicator table (all districts, current indicator)
+    #
+    # 지도에서 선택한 지표를 기준으로 전체 District를 정렬해서
+    # 정확한 수치를 표로 보여줍니다. District를 클릭하지 않아도
+    # 여기서 전체 현황을 한 번에 확인할 수 있습니다.
+    # --------------------------------------------------------
+
+    st.markdown("---")
+
+    st.markdown(
+        "### 📊 전체 District 수치표"
+    )
+
+    st.caption(
+        f"현재 지도에 표시된 지표: **{selected_label}** "
+        "(정렬 기준)"
+    )
+
+    table_columns = [
+        c
+        for c in [
+            DISTRICT_NAME_FIELD,
+            DISTRICT_ID_FIELD,
+            "Severity",
+            "Affected_population",
+            "Water_access_population",
+            "Casualties",
+            "Estimated_funding_USD",
+        ]
+        if c in merged.columns
+    ]
+
+    display_table = pd.DataFrame(
+        merged.drop(columns="geometry")
+    )[table_columns].copy()
+
+    # Sort by the selected indicator so the most affected /
+    # highest-value districts appear first.
+    if selected_column in display_table.columns:
+
+        if selected_kind == "numeric":
+
+            display_table["_sort_key"] = pd.to_numeric(
+                display_table[selected_column],
+                errors="coerce",
+            )
+
+            display_table = (
+                display_table.sort_values(
+                    "_sort_key",
+                    ascending=False,
+                    na_position="last",
+                ).drop(columns="_sort_key")
+            )
+
+        else:
+
+            severity_order = {
+                label: i
+                for i, (label, _) in enumerate(
+                    SEVERITY_LEGEND
+                )
+            }
+
+            display_table["_sort_key"] = (
+                display_table[selected_column]
+                .map(severity_order)
+                .fillna(len(SEVERITY_LEGEND))
+            )
+
+            display_table = (
+                display_table.sort_values(
+                    "_sort_key"
+                ).drop(columns="_sort_key")
+            )
+
+    for col in [
+        "Affected_population",
+        "Water_access_population",
+        "Casualties",
+    ]:
+
+        if col in display_table.columns:
+
+            display_table[col] = display_table[
+                col
+            ].apply(format_number)
+
+    if "Estimated_funding_USD" in display_table.columns:
+
+        display_table["Estimated_funding_USD"] = (
+            display_table[
+                "Estimated_funding_USD"
+            ].apply(format_currency)
+        )
+
+    st.dataframe(
+        display_table.reset_index(drop=True),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption(
+        "표의 값은 Excel(WASH_data_template.xlsx)의 "
+        "District_Situation 시트 또는 district_situation.csv를 "
+        "채우면 자동으로 업데이트됩니다."
+    )
 
     # --------------------------------------------------------
     # Footer
